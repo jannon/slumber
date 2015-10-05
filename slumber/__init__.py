@@ -22,17 +22,31 @@ class ResourceAttributesMixin(object):
     attributes.
     """
 
+    _methods = {
+        'get': {'method': 'GET', 'has_data': False},
+        'head': {'method': 'HEAD', 'has_data': False},
+        'options': {'method': 'OPTIONS', 'has_data': False},
+        'post': {'method': 'POST', 'has_data': True},
+        'put': {'method': 'PUT', 'has_data': True},
+        'patch': {'method': 'PATCH', 'has_data': True},
+        'delete': {'method': 'DELETE', 'has_data': True},
+    }
+
     def __getattr__(self, item):
         if item.startswith("_"):
             raise AttributeError(item)
 
-        kwargs = {}
-        for key, value in iterator(self._store):
-            kwargs[key] = value
+        methods = self._get_methods()
+        if item not in methods.keys():
+            kwargs = self._store.copy()
+            kwargs.update({"base_url": url_join(self._store["base_url"], item)})
 
-        kwargs.update({"base_url": url_join(self._store["base_url"], item)})
+            return Resource(**kwargs)
+        self._call = methods[item]
+        return self
 
-        return Resource(**kwargs)
+    def _get_methods(self):
+        return self._methods
 
 
 class Resource(ResourceAttributesMixin, object):
@@ -48,8 +62,9 @@ class Resource(ResourceAttributesMixin, object):
 
     def __init__(self, *args, **kwargs):
         self._store = kwargs
+        self._call = None
 
-    def __call__(self, id=None, format=None, url_override=None):
+    def __call__(self, res_id=None, res_format=None, url_override=None, **kwargs):
         """
         Returns a new instance of self modified by one or more of the available
         parameters. These allows us to do things like override format for a
@@ -57,19 +72,21 @@ class Resource(ResourceAttributesMixin, object):
         a specific resource by it's ID.
         """
 
+        # Try for method call first
+        if self._call:
+            return self._perform_action(**kwargs)
+
         # Short Circuit out if the call is empty
-        if id is None and format is None and url_override is None:
+        if res_id is None and res_format is None and url_override is None:
             return self
 
-        kwargs = {}
-        for key, value in iterator(self._store):
-            kwargs[key] = value
+        kwargs = self._store.copy()
 
         if id is not None:
-            kwargs["base_url"] = url_join(self._store["base_url"], id)
+            kwargs["base_url"] = url_join(self._store["base_url"], res_id)
 
-        if format is not None:
-            kwargs["format"] = format
+        if res_format is not None:
+            kwargs["format"] = res_format
 
         if url_override is not None:
             # @@@ This is hacky and we should probably figure out a better way
@@ -92,12 +109,16 @@ class Resource(ResourceAttributesMixin, object):
             if data is not None:
                 data = s.dumps(data)
 
-        resp = self._store["session"].request(method, url, data=data, params=params, files=files, headers=headers)
+        resp = self._store["session"].request(method, url, data=data, params=params, files=files,
+                                              headers=headers)
 
+        # TODO: Deprecate custom exceptions and pass through requests exceptions
         if 400 <= resp.status_code <= 499:
-            raise exceptions.HttpClientError("Client Error %s: %s" % (resp.status_code, url), response=resp, content=resp.content)
+            raise exceptions.HttpClientError("Client Error %s: %s" % (resp.status_code, url),
+                                             response=resp, content=resp.content)
         elif 500 <= resp.status_code <= 599:
-            raise exceptions.HttpServerError("Server Error %s: %s" % (resp.status_code, url), response=resp, content=resp.content)
+            raise exceptions.HttpServerError("Server Error %s: %s" % (resp.status_code, url),
+                                             response=resp, content=resp.content)
 
         self._ = resp
 
@@ -129,12 +150,24 @@ class Resource(ResourceAttributesMixin, object):
             return resp.content
 
     def _process_response(self, resp):
-        # TODO: something to expose headers and status
+        self._store["api"]._set_response(resp)
 
         if 200 <= resp.status_code <= 299:
             return self._try_to_serialize_response(resp)
         else:
             return  # @@@ We should probably do some sort of error here? (Is this even possible?)
+
+    def _perform_action(self, **kwargs):
+        method = self._call['method']
+
+        if self._call['has_data']:
+            data = kwargs.pop('data', None)
+            files = kwargs.pop('files', None)
+            resp = self._request(method, data=data, files=files, params=kwargs)
+        else:
+            resp = self._request(method, params=kwargs)
+
+        return self._process_response(resp)
 
     def url(self):
         url = self._store["base_url"]
@@ -144,47 +177,13 @@ class Resource(ResourceAttributesMixin, object):
 
         return url
 
-    # TODO: refactor these methods - lots of commonality
-    def get(self, **kwargs):
-        resp = self._request("GET", params=kwargs)
-        return self._process_response(resp)
-
-    def options(self, **kwargs):
-        resp = self._request("OPTIONS", params=kwargs)
-        return self._process_response(resp)
-
-    def head(self, **kwargs):
-        resp = self._request("HEAD", params=kwargs)
-        return self._process_response(resp)
-
-    def post(self, data=None, files=None, **kwargs):
-        resp = self._request("POST", data=data, files=files, params=kwargs)
-        return self._process_response(resp)
-
-    def patch(self, data=None, files=None, **kwargs):
-        resp = self._request("PATCH", data=data, files=files, params=kwargs)
-        return self._process_response(resp)
-
-    def put(self, data=None, files=None, **kwargs):
-        resp = self._request("PUT", data=data, files=files, params=kwargs)
-        return self._process_response(resp)
-
-    def delete(self, **kwargs):
-        resp = self._request("DELETE", params=kwargs)
-        if 200 <= resp.status_code <= 299:
-            if resp.status_code == 204:
-                return True
-            else:
-                return True  # @@@ Should this really be True?
-        else:
-            return False
-
 
 class API(ResourceAttributesMixin, object):
 
-    def __init__(self, base_url=None, auth=None, format=None, append_slash=True, session=None, serializer=None):
+    def __init__(self, base_url=None, auth=None, res_format=None, append_slash=True, session=None,
+                 serializer=None):
         if serializer is None:
-            serializer = Serializer(default=format)
+            serializer = Serializer(default=res_format)
 
         if session is None:
             session = requests.session()
@@ -192,12 +191,25 @@ class API(ResourceAttributesMixin, object):
 
         self._store = {
             "base_url": base_url,
-            "format": format if format is not None else "json",
+            "format": res_format if res_format is not None else "json",
             "append_slash": append_slash,
             "session": session,
             "serializer": serializer,
+            "api": self
         }
 
         # Do some Checks for Required Values
         if self._store.get("base_url") is None:
             raise exceptions.ImproperlyConfigured("base_url is required")
+
+    def _set_response(self, resp):
+        self._status_code = resp.status_code
+        self._headers = resp.headers
+
+    @property
+    def status_code(self):
+        return self._status_code
+
+    @property
+    def headers(self):
+        return self._headers
