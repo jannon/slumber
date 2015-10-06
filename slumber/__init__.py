@@ -47,8 +47,7 @@ class ResourceAttributesMixin(object):
         if item not in methods.keys():
             kwargs = copy_kwargs(self._store)
             kwargs.update({"base_url": url_join(self._store["base_url"], item)})
-
-            return Resource(**kwargs)
+            return self._get_resource(**kwargs)
         self._call = methods[item]
         return self
 
@@ -187,8 +186,13 @@ class Resource(ResourceAttributesMixin, object):
 
         return url
 
+    def _get_resource(self, **kwargs):
+        return self.__class__(**kwargs)
+
 
 class API(ResourceAttributesMixin, object):
+
+    resource_class = Resource
 
     def __init__(self, base_url=None, auth=None, res_format=None, append_slash=True, session=None,
                  serializer=None):
