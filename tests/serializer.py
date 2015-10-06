@@ -24,9 +24,9 @@ class ResourceTestCase(unittest.TestCase):
             self.assertEqual(type(serializer), slumber.serialize.JsonSerializer,
                              "content_type %s should produce a JsonSerializer")
 
-        result = serializer.dumps(self.data)
+        result = s.dumps(self.data)
         self.assertEqual(result, '{"foo": "bar"}')
-        self.assertEqual(self.data, serializer.loads(result))
+        self.assertEqual(self.data, s.loads(result))
 
     def test_yaml_get_serializer(self):
         s = slumber.serialize.Serializer()
@@ -39,6 +39,6 @@ class ResourceTestCase(unittest.TestCase):
             self.assertEqual(type(serializer), slumber.serialize.YamlSerializer,
                              "content_type %s should produce a YamlSerializer")
 
-        result = serializer.dumps(self.data)
+        result = s.dumps(self.data, format='yaml')
         self.assertEqual(result, "{foo: bar}\n")
-        self.assertEqual(self.data, serializer.loads(result))
+        self.assertEqual(self.data, s.loads(result, format='yaml'))
